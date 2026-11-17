@@ -1,4 +1,4 @@
-// Token Radar, model radar-4 (Node 22, standard library only).
+// Token Radar, model radar-5 (Node 22, standard library only).
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>),
 // scores every launch candidate with the fitted curve in lib/model.ts,
@@ -14,10 +14,11 @@
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
 
+import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { boardIssue, buildRadar, dataScript, parseSnapshot, type Fingerprint } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -43,8 +44,20 @@ if (!existsSync(inputFile)) {
 }
 const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
-const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
-const { board, radar } = buildRadar(snapshot);
+const rawSnapshotBytes = readFileSync(inputFile);
+const rawSnapshotText = rawSnapshotBytes.toString('utf8');
+const snapshot = parseSnapshot(rawSnapshotText);
+// The data fingerprint: the SHA-256 of the raw snapshot file bytes, so the
+// dashboard can show exactly which snapshot the board was priced from. It
+// is computed from the file, not the clock, so the build stays deterministic.
+const fingerprint: Fingerprint = {
+  protocols: snapshot.protocols.length,
+  watchlist: snapshot.watchlist.length,
+  snapshot_sha256: createHash('sha256').update(rawSnapshotBytes).digest('hex'),
+  as_of: snapshot.as_of,
+  source: snapshot.source,
+};
+const { board, radar } = buildRadar(snapshot, fingerprint);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
@@ -91,8 +104,9 @@ writeFileSync(
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
-    `token radar: curve log10 mcap = ${radar.curve.intercept} + ${radar.curve.slope} x log10 TVL (Huber, n=${radar.curve.fit_n}); top implied $${board[0]!.implied_value_usd.toLocaleString('en-US')} (${board[0]!.name})\n` +
-    `token radar: validation LOO n=${radar.validation.loo.n} median miss ${radar.validation.loo.median_miss}x (${radar.validation.loo.within_3x} within 3x), walk-forward n=${radar.validation.walk_forward.test_n} median miss ${radar.validation.walk_forward.median_miss}x (${radar.validation.walk_forward.within_3x} within 3x, cutoff ${radar.validation.walk_forward.cutoff})\n` +
-    `token radar: verdicts farm ${board.filter((r) => r.verdict === 'farm').length}, thin ${board.filter((r) => r.verdict === 'thin').length}, skip ${board.filter((r) => r.verdict === 'skip').length}\n` +
+    `token radar: curve log10 mcap = ${radar.curve.intercept.toFixed(4)} + ${radar.curve.slope.toFixed(4)} x log10 TVL (Huber, n=${radar.curve.fit_pool_n}); top implied $${board[0]!.implied_value_usd.toLocaleString('en-US')} (${board[0]!.name})\n` +
+    `token radar: validation LOO n=${radar.validation.loo_n} median miss ${radar.validation.loo_median_miss_x}x (${radar.validation.loo_within_3x_pct}% within 3x, rho ${radar.validation.loo_spearman}), walk-forward n=${radar.validation.wf_test_n} median miss ${radar.validation.wf_median_miss_x}x (${radar.validation.wf_within_3x_pct}% within 3x, rho ${radar.validation.wf_spearman}, cutoff ${radar.validation.wf_cutoff})\n` +
+    `token radar: ranking vs TVL order: top 10 differs in ${radar.validation.top10_diff}, watchlist in ${radar.validation.watchlist_diff}/40, Spearman ${radar.validation.rank_vs_tvl_spearman}\n` +
+    `token radar: verdicts farm ${board.filter((r) => r.farm_verdict === 'farm').length}, thin ${board.filter((r) => r.farm_verdict === 'thin').length}, skip ${board.filter((r) => r.farm_verdict === 'skip').length}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashboardFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
