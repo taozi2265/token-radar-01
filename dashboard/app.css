@@ -154,3 +154,49 @@ dialog.detail::backdrop { background: rgba(4, 7, 18, 0.72); }
   .lede h1 { font-size: 24px; }
   .equation { grid-template-columns: 1fr; }
 }
+
+/* radar-4: scatter plot, ablation table, equation lists, detail grid */
+.muted { color: var(--muted); font-size: 13px; }
+.scatter-panel svg.scatter { width: 100%; height: auto; display: block; margin-top: 8px; }
+.scatter .grid { stroke: #1c2440; stroke-width: 1; }
+.scatter .tick { fill: var(--muted); font-size: 10px; }
+.scatter .axis { fill: var(--muted); font-size: 11px; }
+.scatter .band { fill: rgba(45, 212, 191, 0.14); }
+.scatter .curve { stroke: #2dd4bf; stroke-width: 2; }
+.scatter .dot-fit { fill: #2dd4bf; }
+.scatter .dot-set { fill: #5b6478; }
+.scatter .dot-pre { fill: #f0b429; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+.sw.dot-fit { background: #2dd4bf; }
+.sw.dot-set { background: #5b6478; }
+.sw.dot-pre { background: #f0b429; }
+.sw.curve { background: #2dd4bf; border-radius: 0; height: 2px; width: 18px; }
+.sw.band { background: rgba(45, 212, 191, 0.25); border-radius: 0; width: 18px; }
+.ablation { width: 100%; margin-top: 10px; }
+.ablation th, .ablation td { padding: 6px 10px; }
+.ablation td.num, .ablation th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.ablation tr.used td { color: var(--gold); font-weight: 600; background: rgba(240, 180, 41, 0.06); }
+.model-eq { display: flex; flex-direction: column; gap: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 12px 0; }
+.model-eq .formula { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 14px; color: var(--gold); }
+.model-eq span:last-child { color: var(--muted); font-size: 13px; }
+dl.eq { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 16px; margin: 10px 0; }
+dl.eq dt { color: var(--muted); font-size: 13px; }
+dl.eq dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.implied { display: flex; flex-direction: column; gap: 2px; }
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; padding: 14px 22px 0; }
+.detail-grid h3 { margin: 0 0 10px; font-size: 15px; }
+.detail-grid p { color: var(--muted); margin: 10px 0; font-size: 14px; }
+.detail-stat { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.detail-stat div { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.detail-stat span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.detail-stat b { display: block; font-size: 16px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+dialog.detail section { padding: 14px 22px 0; }
+dialog.detail section:last-child { padding-bottom: 20px; }
+dialog.detail section h3 { margin: 0 0 10px; font-size: 15px; }
+dialog.detail section p { color: var(--muted); margin: 8px 0; font-size: 14px; }
+@media (max-width: 760px) {
+  .detail-grid { grid-template-columns: 1fr; }
+  .detail-stat { grid-template-columns: 1fr 1fr; }
+}
