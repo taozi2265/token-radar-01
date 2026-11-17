@@ -196,6 +196,18 @@ dialog.detail section { padding: 14px 22px 0; }
 dialog.detail section:last-child { padding-bottom: 20px; }
 dialog.detail section h3 { margin: 0 0 10px; font-size: 15px; }
 dialog.detail section p { color: var(--muted); margin: 8px 0; font-size: 14px; }
+/* radar-5: model strip, fingerprint, collapsed model section, early dots */
+.model-strip { display: flex; flex-direction: column; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-top: 16px; }
+.model-strip .formula { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; color: var(--gold); overflow-x: auto; white-space: nowrap; }
+.model-strip span:last-child { color: var(--muted); font-size: 13px; }
+.fingerprint { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; color: var(--faint); margin-top: 10px; overflow-wrap: anywhere; }
+.model-section { margin-top: 12px; }
+.model-section > summary { cursor: pointer; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; font-size: 16px; font-weight: 600; list-style: none; }
+.model-section > summary::-webkit-details-marker { display: none; }
+.model-section > summary:hover { border-color: var(--gold-dim); }
+.model-section .panel { margin-top: 12px; }
+.scatter .dot-early { fill: #c9a227; opacity: 0.75; }
+.sw.dot-early { background: #c9a227; }
 @media (max-width: 760px) {
   .detail-grid { grid-template-columns: 1fr; }
   .detail-stat { grid-template-columns: 1fr 1fr; }
