@@ -1,7 +1,9 @@
-// Token Radar, model radar-2: one sealed snapshot in, one ranked board out.
+// Token Radar, model radar-3: one sealed snapshot in, one ranked board out.
 //
 // The board ranks every protocol that could still launch a token, by an implied
-// value priced off the market that already trades in the same snapshot.
+// value priced off the market that already trades in the same snapshot — and,
+// new in radar-3, the price is one the snapshot itself tested, not one it
+// merely asserted.
 //
 // What counts as a launch candidate. A protocol is a candidate when the snapshot
 // records no token for it (no market cap, no CoinGecko id, no symbol) AND it is
@@ -14,24 +16,43 @@
 // WBTC is Bitcoin on Ethereum and Binance staked ETH is ETH in a staking
 // product: neither is a token that does not exist yet, however large its TVL.
 //
-// How implied value is priced. The multiple is not a magic constant. It is
-// calibrated from the live-token protocols in the same snapshot: for each
-// category, the median market-cap-to-TVL ratio of the live protocols that trade
-// in it. A category is only trusted when at least three live protocols trade
-// in it; below that the market-wide median is used instead. The category
-// median is shrunk toward the market median with a pseudo-count of four, so a
-// thin category cannot set the price alone, and every ratio is winsorized to
-// [0.01, 2.00] before the median is taken, so one wild outlier cannot either.
-// The multiple is clamped to [0.02, 0.80]. Then:
+// How implied value is priced, and why the multiple is the market's, not a
+// category's. Radar-2 priced each category off its own live-token median. Radar-3
+// tested that choice against the snapshot's live tokens, two ways, and the
+// category multiples lost both times: leave-one-out on the 119 live protocols
+// put the category model at a 94.6% median error with 19% of predictions within
+// 2x of the real market cap, while one market-wide median scored 89.4% and 27%;
+// a walk-forward test, fitted on protocols listed before 2024-02-28 and tested
+// on those listed after, gave 97.4% and 16% for the category model against
+// 86.8% and 25% for the market median. The category differences are mostly
+// noise, so radar-3 prices every protocol off the market-wide median
+// market-cap-to-TVL ratio of the live protocols in this snapshot (winsorized
+// to [0.01, 2.00], clamped to [0.02, 0.80]). The per-category medians are still
+// computed and shown, as the reference table, so the choice is auditable.
+// Then:
 //
 //   implied = round(tvl_usd x multiple x 0.5 x growth x maturity x breadth)
 //
-//   multiple   the calibrated category multiple above
+//   multiple   the market-wide median mcap/TVL of live protocols (0.246 here)
 //   0.5        the pre-token discount: a token that does not exist yet carries
 //              launch, vesting and liquidity risk a live token does not
 //   growth     1 + clamp(change_7d, -60, 120) / 100 x 0.5
 //   maturity   0.6 + 0.4 x min(age_days, 1095) / 1095 (unknown age: 365 days)
 //   breadth    1 + 0.05 x min(chains - 1, 4): distribution across chains
+//
+// The validation tests the live-token prediction — the same formula without the
+// 0.5 pre-token discount, which is a stated haircut, not a fitted number — so a
+// reader can see what the model gets right and where it is rough: the typical
+// live market cap lands about 5x from the prediction, and the multiple is a
+// central tendency, not a price.
+//
+// Farm verdicts, netted. A farm plan costs gas plus the yield forgone on the
+// capital it locks (5% a year, stated). A farmer's share, if the protocol
+// launches, is taken as 5% of the implied value paid to farmers, split among
+// 10,000 farmers — both stated assumptions, not facts. Farm when that share is
+// at least 3x the farming cost, thin when it covers the cost, skip when it
+// does not. The verdict and its one-line reason travel on every row, so the
+// board says which rows are worth the work, not just which are biggest.
 //
 // No protocol name is ever special-cased: the same function scores every row,
 // and the dashboard recomputes each row from the same figures so the page and
@@ -78,6 +99,16 @@ export interface ModelConstants {
   multiple_cap: number;
   winsor_low: number;
   winsor_high: number;
+  /** Share of the implied value paid to farmers, if the protocol launches. */
+  farmer_share_pct: number;
+  /** Farmers splitting that share. */
+  farmers: number;
+  /** A farmer's share must be this many times the farming cost for "farm". */
+  farm_multiple: number;
+  /** A farmer's share must be this many times the farming cost for "thin". */
+  thin_multiple: number;
+  /** Forgone yearly yield on the capital a farm locks. */
+  opportunity_apr: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -97,10 +128,15 @@ export const MODEL: ModelConstants = {
   multiple_cap: 0.8,
   winsor_low: 0.01,
   winsor_high: 2.0,
+  farmer_share_pct: 0.05,
+  farmers: 10000,
+  farm_multiple: 3,
+  thin_multiple: 1,
+  opportunity_apr: 0.05,
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -110,6 +146,18 @@ export interface FarmStep {
   text: string;
   cost: string;
   time: string;
+}
+
+/** A farm verdict: whether the row is worth farming, net of its cost. */
+export type Verdict = 'farm' | 'thin' | 'skip';
+
+/** What one farm position costs: gas plus the yield forgone on locked capital. */
+export interface FarmCost {
+  capital_usd: number;
+  hold_days: number;
+  gas_usd: number;
+  opportunity_usd: number;
+  total_usd: number;
 }
 
 /** One row of board.json: the ranked board's row. */
@@ -131,6 +179,7 @@ export interface BoardRow {
   implied_value_usd: number;
   model: {
     multiple: number;
+    category_multiple: number;
     comparables: number;
     growth_pct: number;
     growth_multiplier: number;
@@ -138,6 +187,11 @@ export interface BoardRow {
     breadth_multiplier: number;
     age_days: number | null;
   };
+  verdict: Verdict;
+  verdict_reason: string;
+  farm_cost_usd: number;
+  farmer_share_usd: number;
+  value_per_cost: number;
   farm_steps: string[];
 }
 
@@ -156,10 +210,16 @@ export interface RadarRow {
   age_days: number | null;
   implied_value_usd: number;
   multiple: number;
+  category_multiple: number;
   comparables: number;
   growth_multiplier: number;
   maturity_multiplier: number;
   breadth_multiplier: number;
+  verdict: Verdict;
+  verdict_reason: string;
+  farm_cost_usd: number;
+  farmer_share_usd: number;
+  value_per_cost: number;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value. */
@@ -180,6 +240,26 @@ export interface CalibrationRow {
   multiple: number;
 }
 
+/** One validation test's numbers: how the model did on live market caps. */
+export interface ValidationStats {
+  n: number;
+  median_ape_pct: number;
+  within_2x: number;
+  within_2x_pct: number;
+  median_ratio: number;
+}
+
+/** The model's validation, computed from the sealed snapshot alone. */
+export interface Validation {
+  /** Leave-one-out on the live protocols: each one predicted without itself. */
+  loo: ValidationStats;
+  /** Walk-forward: fitted on protocols listed before the cutoff, tested after. */
+  walk_forward: ValidationStats & { cutoff: string; fit_n: number; test_n: number };
+  /** The radar-2 category-multiple model, same tests, for comparison. */
+  baseline_loo: ValidationStats;
+  baseline_walk_forward: ValidationStats;
+}
+
 /** Everything the dashboard needs: the board, the live set, the calibration, the model. */
 export interface RadarData {
   as_of: string;
@@ -195,6 +275,7 @@ export interface RadarData {
   rows: RadarRow[];
   live: LiveRow[];
   calibration: CalibrationRow[];
+  validation: Validation;
 }
 
 /** Why a snapshot is not one this model can score. */
@@ -232,6 +313,16 @@ function winsorize(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
 }
 
+/** A dollar figure as a short string: $1,605, $19, $1.96. */
+export function fmtMoney(n: number): string {
+  if (n >= 1000) return `$${Math.round(n).toLocaleString('en-US')}`;
+  if (n >= 10) return `$${Math.round(n)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
+
 /**
  * The market's own pricing table, built from the live-token protocols in this
  * snapshot alone: the median market-cap-to-TVL ratio per category, and the
@@ -244,14 +335,7 @@ export interface Calibration {
 }
 
 export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): Calibration {
-  const live = snapshot.protocols.filter(
-    (p) =>
-      !(p.mcap_usd === null && p.gecko_id === null && p.symbol === null) &&
-      p.mcap_usd !== null &&
-      p.mcap_usd > 0 &&
-      p.tvl_usd > 0 &&
-      p.category !== 'CEX',
-  );
+  const live = livePool(snapshot);
   const ratios = live.map((p) => winsorize(p.mcap_usd! / p.tvl_usd, model.winsor_low, model.winsor_high));
   const globalMedian = ratios.length > 0 ? median(ratios) : 0.25;
   const grouped = new Map<string, number[]>();
@@ -276,7 +360,28 @@ export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): Ca
   return { globalMedian, byCategory };
 }
 
-/** The calibrated multiple of one category, or the market median when it has too few live protocols. */
+/** The live-token protocols the calibration is built from. */
+export function livePool(snapshot: Snapshot): SnapshotProtocol[] {
+  return snapshot.protocols.filter(
+    (p) =>
+      !(p.mcap_usd === null && p.gecko_id === null && p.symbol === null) &&
+      p.mcap_usd !== null &&
+      p.mcap_usd > 0 &&
+      p.tvl_usd > 0 &&
+      p.category !== 'CEX',
+  );
+}
+
+/**
+ * The multiple radar-3 prices off: the market-wide median, clamped like every
+ * multiple. The category medians lost to it out of sample (see validateModel),
+ * so the model uses one market price and shows the category table for reference.
+ */
+export function pricingMultiple(calibration: Calibration, model: ModelConstants = MODEL): number {
+  return Math.min(model.multiple_cap, Math.max(model.multiple_floor, calibration.globalMedian));
+}
+
+/** A category's own median multiple, for the reference table and the baseline test. */
 export function categoryMultiple(category: string | null, calibration: Calibration, model: ModelConstants = MODEL): { multiple: number; comparables: number } {
   const entry = calibration.byCategory.get(category ?? 'Other');
   if (entry === undefined) return { multiple: calibration.globalMedian, comparables: 0 };
@@ -292,6 +397,7 @@ export function impliedValue(
 ): {
   implied: number;
   multiple: number;
+  categoryMultiple: number;
   comparables: number;
   growthPct: number;
   growthMult: number;
@@ -300,7 +406,8 @@ export function impliedValue(
   age: number | null;
 } {
   const age = ageDays(asOf, protocol.listed_at);
-  const { multiple, comparables } = categoryMultiple(protocol.category, calibration, model);
+  const multiple = pricingMultiple(calibration, model);
+  const cat = categoryMultiple(protocol.category, calibration, model);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
@@ -314,7 +421,100 @@ export function impliedValue(
     1,
     Math.round(protocol.tvl_usd * multiple * model.pre_token_discount * growthMult * maturityMult * breadthMult),
   );
-  return { implied, multiple, comparables, growthPct, growthMult, maturityMult, breadthMult, age };
+  return { implied, multiple, categoryMultiple: cat.multiple, comparables: cat.comparables, growthPct, growthMult, maturityMult, breadthMult, age };
+}
+
+/** The growth, maturity and breadth multipliers one protocol gets, shared by the model and its tests. */
+export function factors(
+  protocol: SnapshotProtocol,
+  asOf: string,
+  model: ModelConstants = MODEL,
+): { growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
+  const age = ageDays(asOf, protocol.listed_at);
+  const rawGrowth = finite(protocol.change_7d, 0);
+  const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
+  const growthMult = 1 + (growthPct / 100) * model.growth_weight;
+  const ageForModel = age ?? model.unknown_age_days;
+  const maturityMult =
+    model.maturity_floor +
+    (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+  const extraChains = Math.min(Math.max(protocol.chains.length - 1, 0), model.breadth_cap);
+  const breadthMult = 1 + model.breadth_step * extraChains;
+  return { growthMult, maturityMult, breadthMult, age };
+}
+
+/**
+ * What the model would say a live token is worth: the same formula as the
+ * board, without the pre-token discount, which is a stated haircut, not a
+ * fitted number. The validation predicts market caps with this.
+ */
+export function predictMcap(
+  protocol: SnapshotProtocol,
+  asOf: string,
+  multiple: number,
+  model: ModelConstants = MODEL,
+): number {
+  const f = factors(protocol, asOf, model);
+  return Math.max(1, Math.round(protocol.tvl_usd * multiple * f.growthMult * f.maturityMult * f.breadthMult));
+}
+
+/** One test's numbers from its predictions: median error, share within 2x, median ratio. */
+function statsOf(predictions: { actual: number; predicted: number }[]): ValidationStats {
+  const apes = predictions.map((p) => Math.abs(p.predicted - p.actual) / p.actual);
+  const ratios = predictions.map((p) => p.predicted / p.actual);
+  const within = predictions.filter((p) => p.predicted / p.actual >= 0.5 && p.predicted / p.actual <= 2).length;
+  return {
+    n: predictions.length,
+    median_ape_pct: Math.round(median(apes) * 1000) / 10,
+    within_2x: within,
+    within_2x_pct: predictions.length > 0 ? Math.round((within / predictions.length) * 100) : 0,
+    median_ratio: round2(median(ratios)),
+  };
+}
+
+/**
+ * The model's validation, computed from the sealed snapshot alone.
+ *
+ * Leave-one-out: every live protocol is predicted from a calibration built
+ * without itself, so no protocol ever prices itself. Walk-forward: the
+ * calibration is fitted only on protocols listed before the median listing
+ * date and tested on those listed after, so no later protocol leaks into the
+ * fit. Both tests are run twice: once for radar-3 (the market-wide median)
+ * and once for the radar-2 baseline (each category's own median), so the
+ * choice between them is measured, not asserted.
+ */
+export function validateModel(snapshot: Snapshot, model: ModelConstants = MODEL): Validation {
+  const pool = livePool(snapshot);
+
+  const loo3: { actual: number; predicted: number }[] = [];
+  const looBase: { actual: number; predicted: number }[] = [];
+  for (const p of pool) {
+    const rest = pool.filter((q) => q.slug !== p.slug);
+    const cal = calibrate({ ...snapshot, protocols: rest }, model);
+    loo3.push({ actual: p.mcap_usd!, predicted: predictMcap(p, snapshot.as_of, pricingMultiple(cal, model), model) });
+    looBase.push({ actual: p.mcap_usd!, predicted: predictMcap(p, snapshot.as_of, categoryMultiple(p.category, cal, model).multiple, model) });
+  }
+
+  const dated = pool.filter((p) => p.listed_at !== null);
+  const cutoff = dated.map((p) => p.listed_at!).sort()[Math.floor(dated.length / 2)]!;
+  const fit = pool.filter((p) => p.listed_at !== null && p.listed_at < cutoff);
+  const test = pool.filter((p) => p.listed_at !== null && p.listed_at >= cutoff);
+  const fitCal = calibrate({ ...snapshot, protocols: fit }, model);
+  const wf3 = test.map((p) => ({
+    actual: p.mcap_usd!,
+    predicted: predictMcap(p, snapshot.as_of, pricingMultiple(fitCal, model), model),
+  }));
+  const wfBase = test.map((p) => ({
+    actual: p.mcap_usd!,
+    predicted: predictMcap(p, snapshot.as_of, categoryMultiple(p.category, fitCal, model).multiple, model),
+  }));
+
+  return {
+    loo: statsOf(loo3),
+    walk_forward: { ...statsOf(wf3), cutoff, fit_n: fit.length, test_n: test.length },
+    baseline_loo: statsOf(looBase),
+    baseline_walk_forward: statsOf(wfBase),
+  };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -357,8 +557,6 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
   return new Map(protocols.map((p) => [p.slug, p]));
 }
 
-const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
-
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
   const calibration = calibrate(snapshot, model);
@@ -369,7 +567,9 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   const candidates = snapshot.protocols.filter((p) => isLaunchCandidate(p));
   const scored = candidates.map((p) => {
     const v = impliedValue(p, snapshot.as_of, calibration, model);
-    return { p, ...v };
+    const cost = farmCost(p, v.age, model);
+    const verdict = farmVerdict(v.implied, cost, model);
+    return { p, ...v, cost, verdict };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -390,6 +590,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     implied_value_usd: s.implied,
     model: {
       multiple: s.multiple,
+      category_multiple: s.categoryMultiple,
       comparables: s.comparables,
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
@@ -397,6 +598,11 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       breadth_multiplier: round4(s.breadthMult),
       age_days: s.age,
     },
+    verdict: s.verdict.verdict,
+    verdict_reason: s.verdict.reason,
+    farm_cost_usd: s.cost.total_usd,
+    farmer_share_usd: s.verdict.share_usd,
+    value_per_cost: s.verdict.ratio,
     farm_steps: farmSteps(s.p, s.age).map(stepText),
   }));
 }
@@ -428,6 +634,70 @@ function holdDaysFor(age: number | null): number {
   if (age < 180) return 60;
   if (age < 365) return 45;
   return 30;
+}
+
+/**
+ * What one farm position costs: the gas to set it up and keep it active, plus
+ * the yield forgone on the capital it locks, at the model's stated yearly rate.
+ * The capital itself is not spent — it is deposited and comes back — so only
+ * the gas and the forgone yield are costs.
+ */
+export function farmCost(p: SnapshotProtocol, age: number | null, model: ModelConstants = MODEL): FarmCost {
+  const capital = capitalFor(p);
+  const hold = holdDaysFor(age);
+  const gas = (capital >= 150 ? 8 : 4) + 2 * Math.ceil(hold / 7);
+  const opportunity = (capital * model.opportunity_apr * hold) / 365;
+  return {
+    capital_usd: capital,
+    hold_days: hold,
+    gas_usd: round2(gas),
+    opportunity_usd: round2(opportunity),
+    total_usd: round2(gas + opportunity),
+  };
+}
+
+/**
+ * The farm verdict, netted: a farmer's share of the implied value, if the
+ * protocol launches and pays the model's stated share of it to the model's
+ * stated number of farmers, against what the farm costs. Farm when the share
+ * is at least farm_multiple times the cost, thin when it covers the cost,
+ * skip when it does not. The reason carries the numbers, so the verdict is
+ * checkable from the row.
+ */
+export function farmVerdict(
+  implied: number,
+  cost: FarmCost,
+  model: ModelConstants = MODEL,
+): { verdict: Verdict; share_usd: number; ratio: number; reason: string } {
+  const share = (implied * model.farmer_share_pct) / model.farmers;
+  const ratio = cost.total_usd > 0 ? share / cost.total_usd : 0;
+  const shareUsd = round2(share);
+  const ratioRounded = round2(ratio);
+  const shareText = fmtMoney(shareUsd);
+  const costText = fmtMoney(cost.total_usd);
+  const assumption = `if the protocol pays ${Math.round(model.farmer_share_pct * 100)}% of its ${fmtMoney(implied)} implied value to ${model.farmers.toLocaleString('en-US')} farmers`;
+  if (ratio >= model.farm_multiple) {
+    return {
+      verdict: 'farm',
+      share_usd: shareUsd,
+      ratio: ratioRounded,
+      reason: `Farm: a farmer's share of about ${shareText} is ${ratioRounded}x the ${costText} it costs to farm, ${assumption}.`,
+    };
+  }
+  if (ratio >= model.thin_multiple) {
+    return {
+      verdict: 'thin',
+      share_usd: shareUsd,
+      ratio: ratioRounded,
+      reason: `Thin: a farmer's share of about ${shareText} is ${ratioRounded}x the ${costText} it costs to farm — it covers the cost, barely, ${assumption}.`,
+    };
+  }
+  return {
+    verdict: 'skip',
+    share_usd: shareUsd,
+    ratio: ratioRounded,
+    reason: `Skip: a farmer's share of about ${shareText} is ${ratioRounded}x the ${costText} it costs to farm — the prize does not pay for the farm, ${assumption}.`,
+  };
 }
 
 /** The category's one action, in the words a farmer can follow. */
@@ -557,10 +827,16 @@ export function radarRow(row: BoardRow): RadarRow {
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
     multiple: row.model.multiple,
+    category_multiple: row.model.category_multiple,
     comparables: row.model.comparables,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     breadth_multiplier: row.model.breadth_multiplier,
+    verdict: row.verdict,
+    verdict_reason: row.verdict_reason,
+    farm_cost_usd: row.farm_cost_usd,
+    farmer_share_usd: row.farmer_share_usd,
+    value_per_cost: row.value_per_cost,
   };
 }
 
@@ -603,6 +879,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     rows: board.map(radarRow),
     live,
     calibration: calibrationRows(snapshot, model),
+    validation: validateModel(snapshot, model),
   };
   return { board, radar };
 }
@@ -650,7 +927,7 @@ export function parseSnapshot(text: string): Snapshot {
   };
 }
 
-/** Why a board is not one the gate will take, or null: coverage, ranks, order, one shared implied value, and farm steps. */
+/** Why a board is not one the gate will take, or null: coverage, ranks, order, one shared implied value, farm steps, and verdicts. */
 export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null {
   const slugs = new Set(board.map((r) => r.slug));
   const missing = snapshot.watchlist.filter((s) => !slugs.has(s));
@@ -666,6 +943,9 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
     if (steps.length < 3 || steps.length > 12) return `${r.slug} has ${steps.length} farm steps`;
     for (const s of steps) if (s.length < 20 || s.length > 600) return `${r.slug} has a farm step of ${s.length} characters`;
     if (!Number.isSafeInteger(r.implied_value_usd) || r.implied_value_usd <= 0) return `${r.slug} has implied value ${r.implied_value_usd}`;
+    if (r.verdict !== 'farm' && r.verdict !== 'thin' && r.verdict !== 'skip') return `${r.slug} has verdict ${String(r.verdict)}`;
+    if (typeof r.verdict_reason !== 'string' || r.verdict_reason.length < 20 || r.verdict_reason.length > 400) return `${r.slug} has a verdict reason of ${r.verdict_reason.length} characters`;
+    if (!(r.farm_cost_usd > 0) || !(r.farmer_share_usd >= 0) || !(r.value_per_cost >= 0)) return `${r.slug} has a bad farm verdict figure`;
   }
   return null;
 }
