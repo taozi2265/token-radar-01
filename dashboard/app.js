@@ -1,7 +1,8 @@
-// Token Radar's dashboard, model radar-2. It reads window.RADAR (written beside
+// Token Radar's dashboard, model radar-3. It reads window.RADAR (written beside
 // dashboard/ by main.ts) and renders the ranked board, a filterable table, a
-// per-protocol detail view with the model's own inputs, the calibration table
-// and the protocol's farm plan. No network: every byte it shows is in data.js.
+// per-protocol detail view with the model's own inputs, the validation the
+// snapshot ran on the model, the calibration table and the protocol's farm
+// plan with its netted verdict. No network: every byte it shows is in data.js.
 (function () {
   'use strict';
 
@@ -27,6 +28,35 @@
     return Math.max(0, Math.round(days)) + 'd';
   }
   function fmtMult(n) { return (n === null || n === undefined) ? 'n/a' : n.toFixed(3) + 'x'; }
+  function fmtMoney(n) {
+    if (n === null || n === undefined || !isFinite(n)) return 'n/a';
+    if (n >= 1000) return '$' + Math.round(n).toLocaleString('en-US');
+    if (n >= 10) return '$' + Math.round(n);
+    return '$' + n.toFixed(2);
+  }
+
+  // The farm verdict, recomputed in the page from the same constants as the
+  // model, so the page and board.json agree on it as they do on the value.
+  function farmCostOf(row) {
+    var m = DATA.model;
+    var capital = capitalFor(row);
+    var hold = holdDaysFor(row.age_days);
+    var gas = (capital >= 150 ? 8 : 4) + 2 * Math.ceil(hold / 7);
+    var opp = capital * m.opportunity_apr * hold / 365;
+    return { capital: capital, hold: hold, gas: gas, opp: opp, total: gas + opp };
+  }
+  function verdictOf(row) {
+    var m = DATA.model;
+    var cost = farmCostOf(row);
+    var share = row.implied_value_usd * m.farmer_share_pct / m.farmers;
+    var ratio = cost.total > 0 ? share / cost.total : 0;
+    return {
+      verdict: ratio >= m.farm_multiple ? 'farm' : ratio >= m.thin_multiple ? 'thin' : 'skip',
+      share: share,
+      cost: cost,
+      ratio: ratio
+    };
+  }
 
   // The model in one function: the page recomputes a row from the snapshot
   // figures and the calibrated multiple, and checks the number board.json
@@ -158,6 +188,7 @@
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
+      else if (key === 'verdict') { av = a.verdict === 'farm' ? 2 : a.verdict === 'thin' ? 1 : 0; bv = b.verdict === 'farm' ? 2 : b.verdict === 'thin' ? 1 : 0; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -180,7 +211,7 @@
     var top = DATA.rows[0];
     return el('section', { class: 'lede' },
       el('h1', null, 'Every protocol with no token on record, ', el('em', { text: 'ranked by what its token could be worth' }), '.'),
-      el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' more below that floor, every one of them a genuine launch candidate — no wrapped, staked or bridged product of a token that already trades. Implied value is a model, not a price, and never a promise of a token.' }),
+      el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' more below that floor — no wrapped, staked or bridged product of a token that already trades. Implied value is a model, not a price, and never a promise of a token.' }),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
         el('div', { class: 'fact' }, el('span', { text: 'Candidates ranked' }), el('b', { text: String(DATA.board_size) })),
@@ -253,7 +284,7 @@
         onclick: function () { openDetail(r.slug); },
         onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
       },
-        el('td', { class: 'num', text: String(r.rank) }),
+        el('td', { class: 'num rank', text: String(r.rank) }),
         el('td', null, el('div', { class: 'name' },
           el('b', { text: r.name }),
           el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') })
@@ -263,7 +294,11 @@
         el('td', { class: 'num', text: fmtAge(r.age_days) }),
         el('td', null, el('div', { class: 'implied' },
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
-          el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
+          el('span', { class: 'num implied-val', text: fmtUsd(r.implied_value_usd) })
+        )),
+        el('td', null, el('div', { class: 'verdict-cell' },
+          el('span', { class: 'pill ' + r.verdict, text: r.verdict }),
+          el('span', { class: 'sub', text: r.value_per_cost + 'x' })
         )),
         el('td', null, statusPill(r))
       );
@@ -280,6 +315,7 @@
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
+            sortHeader('verdict', 'Verdict'),
             el('th', { scope: 'col', text: 'Token' })
           )),
           tbody
@@ -311,6 +347,33 @@
     );
   }
 
+  function validationPanel() {
+    var v = DATA.validation;
+    var b = v.baseline_loo;
+    var wb = v.baseline_walk_forward;
+    return el('section', { class: 'panel validation' },
+      el('h2', { text: 'Model validation — tested on the live market, not asserted' }),
+      el('div', { class: 'val-stats' },
+        el('div', { class: 'val-stat' },
+          el('span', { text: 'Leave-one-out · median error' }),
+          el('b', { text: v.loo.median_ape_pct + '%' }),
+          el('span', { class: 'val-sub', text: v.loo.n + ' live tokens, each predicted without itself · ' + v.loo.within_2x + ' within 2x (' + v.loo.within_2x_pct + '%)' })),
+        el('div', { class: 'val-stat' },
+          el('span', { text: 'Walk-forward · median error' }),
+          el('b', { text: v.walk_forward.median_ape_pct + '%' }),
+          el('span', { class: 'val-sub', text: 'fitted on ' + v.walk_forward.fit_n + ' listed before ' + v.walk_forward.cutoff + ', tested on ' + v.walk_forward.test_n + ' after · ' + v.walk_forward.within_2x + ' within 2x (' + v.walk_forward.within_2x_pct + '%)' })),
+        el('div', { class: 'val-stat' },
+          el('span', { text: 'Category multiples did worse' }),
+          el('b', { text: b.median_ape_pct + '% / ' + wb.median_ape_pct + '%' }),
+          el('span', { class: 'val-sub', text: 'leave-one-out ' + b.within_2x_pct + '% within 2x, walk-forward ' + wb.within_2x_pct + '% — so radar-3 prices off the market median' })),
+        el('div', { class: 'val-stat' },
+          el('span', { text: 'Market median multiple' }),
+          el('b', { text: fmtMult(DATA.global_median) }),
+          el('span', { class: 'val-sub', text: 'median market-cap-to-TVL of the live protocols in this snapshot' }))
+      )
+    );
+  }
+
   function modelPanel() {
     var m = DATA.model;
     var calibRows = (DATA.calibration || []).map(function (c) {
@@ -322,22 +385,25 @@
     });
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is priced' }),
-      el('p', { text: 'The multiple is not a magic constant. It is calibrated from the live-token protocols in this same snapshot: for each category, the median market-cap-to-TVL ratio of the live protocols that trade in it. A category is trusted only when at least ' + m.min_comparables + ' live protocols trade in it; below that the market-wide median of ' + fmtMult(DATA.global_median) + ' is used. The category median is shrunk toward the market median, and every ratio is winsorized to [' + m.winsor_low + ', ' + m.winsor_high + '] first, so one wild outlier cannot set the price.' }),
+      el('p', { text: 'The multiple is one market price, not one per category. Radar-2 priced each category off its own live-token median; radar-3 tested that choice two ways on this snapshot and it lost both: leave-one-out put the category model at a ' + DATA.validation.baseline_loo.median_ape_pct + '% median error (' + DATA.validation.baseline_loo.within_2x_pct + '% within 2x) against ' + DATA.validation.loo.median_ape_pct + '% (' + DATA.validation.loo.within_2x_pct + '%) for one market-wide median, and the walk-forward test gave ' + DATA.validation.baseline_walk_forward.median_ape_pct + '% (' + DATA.validation.baseline_walk_forward.within_2x_pct + '%) against ' + DATA.validation.walk_forward.median_ape_pct + '% (' + DATA.validation.walk_forward.within_2x_pct + '%). The category differences are mostly noise, so every protocol is priced off the market median of ' + fmtMult(DATA.global_median) + '.' }),
       el('div', { class: 'formula' },
-        el('b', { text: 'implied = round( tvl_usd x multiple x 0.5' }),
+        el('b', { text: 'implied = round( tvl_usd x ' + DATA.global_median.toFixed(3) + ' x 0.5' }),
         ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ')',
         ' x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ')',
         ' x (1 + ' + m.breadth_step + ' x min(chains - 1, ' + m.breadth_cap + ')) )'
       ),
-      el('p', null, 'The ', el('b', { text: '0.5' }), ' is the pre-token discount: a token that does not exist yet carries launch, vesting and liquidity risk a live token does not. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ', el('b', { text: m.unknown_age_days + ' days' }), '. No protocol name is special-cased, and no row is hand-picked.'),
-      el('h3', { class: 'live-h', text: 'Calibration: what the live market pays, by category' }),
+      el('p', null, 'The ', el('b', { text: '0.5' }), ' is the pre-token discount: a token that does not exist yet carries launch, vesting and liquidity risk a live token does not. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ', el('b', { text: m.unknown_age_days + ' days' }), '. Every ratio behind the median is winsorized to [' + m.winsor_low + ', ' + m.winsor_high + '] first, so one wild outlier cannot set the price. No protocol name is special-cased, and no row is hand-picked.'),
+      el('p', null, 'Farm verdicts are netted, not just ranked: a farmer’s share is taken as ', el('b', { text: Math.round(m.farmer_share_pct * 100) + '% of the implied value' }), ', paid to ', el('b', { text: m.farmers.toLocaleString('en-US') + ' farmers' }), ', against a farming cost of gas plus the yield forgone on the locked capital (' + Math.round(m.opportunity_apr * 100) + '% a year). ', el('b', { text: 'Farm' }), ' when the share is at least ' + m.farm_multiple + 'x the cost, ', el('b', { text: 'thin' }), ' when it covers the cost, ', el('b', { text: 'skip' }), ' when it does not.'),
+      el('h3', { class: 'live-h', text: 'Reference: what each category’s live protocols pay' }),
+      el('p', { text: 'Each category’s own median, from its live protocols. The model does not price off these — the validation above says the market median is the better price — but they are shown so the choice is auditable.' }),
       el('div', { class: 'table-wrap' },
         el('table', { class: 'calib' },
           el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Category' }), el('th', { scope: 'col', class: 'num', text: 'Live protocols' }), el('th', { scope: 'col', class: 'num', text: 'Multiple' }))),
           el('tbody', null, calibRows)
         )
       ),
-      el('div', { class: 'warn', text: 'Honest limits: this snapshot records no token for these protocols, it does not promise one. An implied value is a model estimate built from TVL, growth, age and the live market — not a price, not a prediction, and not advice. Wrapped, staked and bridged products of tokens that already trade are left out on purpose.' })
+      el('div', { class: 'warn', text: 'Honest limits: this snapshot records no token for these protocols, it does not promise one. An implied value is a model estimate built from TVL, growth, age and the live market — not a price, not a prediction, and not advice. Wrapped, staked and bridged products of tokens that already trade are left out on purpose.' }),
+      el('p', { class: 'val-note', text: 'Honest read on the validation: a multiple is a central tendency, not a price — only about a quarter of live market caps land within 2x of the prediction. What the tests show is that one market price beats a price per category, out of sample, twice. The tests predict live market caps with the same formula the board uses, minus the 0.5 pre-token discount (a stated haircut, not a fitted number), and both are computed from this sealed snapshot.' })
     );
   }
 
@@ -361,11 +427,30 @@
       ),
       el('button', { class: 'close', type: 'button', 'aria-label': 'Close details', text: 'Close', onclick: function () { dialog.close(); } })
     ));
+    var vc = verdictOf(row);
+    var cost = vc.cost;
+    dialog.appendChild(el('section', { class: 'detail-section verdict' },
+      el('h3', { text: 'Farm verdict' }),
+      el('div', { class: 'verdict-line' },
+        el('span', { class: 'pill ' + row.verdict, text: row.verdict }),
+        el('span', { text: row.verdict_reason })
+      ),
+      el('div', { class: 'equation' },
+        el('div', null, el('span', { text: 'Capital to lock' }), el('b', { class: 'num', text: fmtMoney(cost.capital) })),
+        el('div', null, el('span', { text: 'Hold' }), el('b', { class: 'num', text: cost.hold + ' days' })),
+        el('div', null, el('span', { text: 'Gas' }), el('b', { class: 'num', text: fmtMoney(cost.gas) })),
+        el('div', null, el('span', { text: 'Forgone yield (5%)' }), el('b', { class: 'num', text: fmtMoney(cost.opp) })),
+        el('div', null, el('span', { text: 'Farming cost' }), el('b', { class: 'num', text: fmtMoney(cost.total) })),
+        el('div', null, el('span', { text: 'Farmer’s share' }), el('b', { class: 'num', text: fmtMoney(vc.share) }))
+      ),
+      el('p', { class: 'note', text: 'The page recomputes this verdict as ' + vc.verdict + ' — ' + (vc.verdict === row.verdict ? 'the same verdict board.json carries.' : 'which differs from the board: the data would be stale.') })
+    ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
-        el('div', null, el('span', { text: 'Category multiple' }), el('b', { class: 'num', text: fmtMult(row.multiple) + ' (' + row.comparables + ' live)' })),
+        el('div', null, el('span', { text: 'Market multiple' }), el('b', { class: 'num', text: fmtMult(row.multiple) })),
+        el('div', null, el('span', { text: 'Category median (reference)' }), el('b', { class: 'num', text: fmtMult(row.category_multiple) + ' (' + row.comparables + ' live)' })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
@@ -373,7 +458,8 @@
         el('div', null, el('span', { text: 'Chains / breadth' }), el('b', { class: 'num', text: (row.chains || []).length + ' / ' + String(row.breadth_multiplier) })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
-      el('p', { class: 'note', text: 'Model ' + DATA.model_version + ': the page recomputes this row as ' + fmtUsd(recomputed) + (agrees ? ' — the same number board.json carries.' : ' — which differs from the board: the data would be stale.') + ' The multiple is the median market-cap-to-TVL ratio of the live protocols in this category, or the market median of ' + fmtMult(DATA.global_median) + ' when too few trade there. This is an estimate, not a price.' })
+      el('p', { class: 'note', text: 'Model ' + DATA.model_version + ': the page recomputes this row as ' + fmtUsd(recomputed) + (agrees ? ' — the same number board.json carries.' : ' — which differs from the board: the data would be stale.') + ' The multiple is the market-wide median market-cap-to-TVL ratio of the live protocols in this snapshot; the category median is shown for reference only. This is an estimate, not a price.' }),
+      el('p', { class: 'note', text: 'Validated out of sample: leave-one-out median error ' + DATA.validation.loo.median_ape_pct + '% (' + DATA.validation.loo.within_2x_pct + '% within 2x of the real market cap), walk-forward ' + DATA.validation.walk_forward.median_ape_pct + '% (' + DATA.validation.walk_forward.within_2x_pct + '% within 2x). A multiple is a central tendency, not a price.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
@@ -396,6 +482,7 @@
     var shell = el('div', { class: 'shell' });
     shell.appendChild(header());
     shell.appendChild(lede());
+    shell.appendChild(validationPanel());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') shell.appendChild(modelPanel());
