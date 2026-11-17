@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/token-radar-01/taozi2265/token-radar-01/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 [![reward](https://make.fun/badge/token-radar-01/taozi2265/token-radar-01/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 
-A dashboard that finds the protocols whose token does not exist yet and ranks them by an implied value, with a farm plan and a netted farm verdict for each one. Entry for the make.fun `token-radar-01` bounty (model radar-3).
+A dashboard that finds the protocols whose token does not exist yet and ranks them by an implied value, with a farm plan and a netted farm verdict for each one. Entry for the make.fun `token-radar-01` bounty (model radar-4).
 
 ## Run it
 
@@ -16,24 +16,34 @@ Node 22.18+ (24 works), standard library only, no network. `main.ts` reads the s
 
 ## The model
 
-Implied value is priced off the live market in the same sealed snapshot, not off a magic constant:
+Implied value is priced off a curve fitted to the live market in the same sealed snapshot — not a flat multiple, and not a category median:
 
 ```
-implied = round(tvl_usd x 0.246 x 0.5
-              x (1 + clamp(change_7d, -60, 120) / 100 x 0.5)
-              x (0.6 + 0.4 x min(age_days, 1095) / 1095)
-              x (1 + 0.05 x min(chains - 1, 4)))
+log10 market cap = 3.6466 + 0.4376 x log10 TVL
+implied value    = round(10 ^ (3.6466 + 0.4376 x log10 tvl_usd) x 0.5)
 ```
 
-- **0.246**: the market-wide median market-cap-to-TVL ratio of the live-token protocols in the snapshot. Radar-2 priced each category off its own median; radar-3 tested that choice two ways and it lost both — leave-one-out on the 119 live protocols gave the category model a 94.6% median error (19% within 2x of the real market cap) against 89.4% (27%) for one market median, and a walk-forward test fitted before 2024-02-28 and tested after gave 97.4% (16%) against 86.8% (25%). So the model prices off the market median; the per-category medians are shown on the dashboard as a reference table.
-- **0.5**: the pre-token discount — a token that does not exist yet carries launch, vesting and liquidity risk a live token does not.
-- **growth / maturity / breadth**: seven-day TVL change, time since first listing (unknown age: 365 days), and distribution across chains.
+The curve is a Huber fit (robust to outliers) on the 90 live-token protocols that are not wrapped, staked, bridged or restaked products of a token that already trades. The market caps of those 90 protocols are prices the market has already printed; the curve is the size-to-value relationship they actually show. A protocol with no token is priced by reading its TVL off that curve, then taking a flat 0.5 haircut for the fact that it has not launched.
 
-The validation predicts live market caps with the same formula minus the 0.5 discount, which is a stated haircut, not a fitted number. A multiple is a central tendency, not a price: only about a quarter of live market caps land within 2x of the prediction.
+- **3.6466 + 0.4376 x log10 TVL**: the fitted curve. A flat multiple values a $2.8B protocol the same way it values a $5M one; the curve does not — market cap grows with the 0.44 power of TVL, so the top implied values are far lower than a multiple would give: Sentora Curator at $30.0M, Steakhouse Financial at $30.0M, Gauntlet at $23.5M.
+- **0.5**: the pre-token discount — a token that does not exist yet carries launch, vesting and liquidity risk a live token does not. It is a stated haircut, not a fitted number.
+- **Nothing else**: the model tests category offsets, a fitted 7-day growth term, fitted listing age and chain breadth, and keeps none of them — see the validation below.
+
+## Validation
+
+The model is tested out of sample on the live-token protocols, and the numbers are on the dashboard:
+
+- **Leave-one-out** (n=90): each live protocol is predicted from a curve fitted without it. Median miss **3.47x**, 43% within 3x, 36% within 2x, rank correlation 0.32.
+- **Walk-forward**: the curve is fitted on the 34 live protocols listed before 2024-07-15 and tested on the 34 listed after. Median miss **2.49x**, 56% within 3x.
+- **Ablation** (each term added in turn, leave-one-out / walk-forward median miss): one flat multiple 4.76x / 4.37x; + size curve (OLS) 3.62x / 2.14x; + Huber weights 3.47x / 2.49x — the model; + family offsets 3.23x / 2.57x; + fitted 7-day growth 3.24x / 2.76x; + fitted listing age 3.26x / 29.74x; + chain breadth 3.68x / 39.09x.
+
+The curve is the big win over a flat multiple. Family offsets help leave-one-out but not walk-forward, so they are not used. Fitted growth is near zero. Fitted listing age and chain breadth are unstable out of time — their walk-forward misses blow up on the small pre-cutoff fit set — so they are not used either. Every implied value carries a P25–P75 band from 200 refits of the curve, widened by the leave-one-out miss of live tokens near the same size; the dashboard shows the curve, the band and every protocol on a scatter plot.
+
+A curve is a central tendency, not a price: only about 36% of live market caps land within 2x of it, and the band says how uncertain the model knows itself to be.
 
 ## Farm verdicts
 
-Every row carries a verdict — **farm**, **thin** or **skip** — netting its implied value against what the farm costs. A farmer's share is taken as 5% of the implied value paid to 10,000 farmers (both stated assumptions); the farming cost is gas plus the yield forgone on the locked capital at 5% a year. Farm when the share is at least 3x the cost, thin when it covers the cost, skip when it does not. The board has 36 farm, 48 thin and 113 skip rows.
+Every row carries a verdict — **farm**, **thin** or **skip** — netting its implied value against what the farm costs. If a token launches, the model assumes 10% of its implied value goes to airdrops, split equally among 10,000 farmers, because a single farmer usually has no basis for claiming a larger share. The farming cost is gas plus the yield forgone on the locked capital at 5% a year. The verdict is the launch odds that would repay the cost: **farm** if the cost is repaid at 10% launch odds or less, **thin** up to 33%, **skip** beyond that. The board has 5 farm, 53 thin and 139 skip rows — the top rows are mostly skip, because a big TVL thins the slice. Each row also shows its net per hands-on hour at a 25% launch chance, and the detail view shows the full cost breakdown, the slice if it launches, and a pro-rata reality check (what the same capital would earn if the airdrop were split by deposit alone).
 
 ## What counts as a launch candidate
 
@@ -42,8 +52,8 @@ A protocol records no token (no market cap, no CoinGecko id, no symbol) **and** 
 ## Layout
 
 - `main.ts` — entrypoint: snapshot in, board + dashboard + dossier out.
-- `lib/model.ts` — the model: calibration, implied value, validation, farm plans and verdicts, board.
-- `dashboard/` — the page: `index.html`, `app.css`, `app.js` (dark radar theme, sortable and filterable table, detail view, calibration table).
+- `lib/model.ts` — the model: the fitted curve, implied value, bands, validation, farm plans and verdicts, board.
+- `dashboard/` — the page: `index.html`, `app.css`, `app.js` (dark radar theme, sortable and filterable table, detail view, scatter plot of the fit, validation panel with the ablation table).
 - `vendor/makefun-board.ts` — make.fun's dossier library, copied from the kit.
 - `.makefun/owner.json` — the claim file naming this account's wallet.
 

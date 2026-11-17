@@ -1,11 +1,11 @@
-// Token Radar, model radar-3 (Node 22, standard library only).
+// Token Radar, model radar-4 (Node 22, standard library only).
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>),
-// scores every launch candidate with the model in lib/model.ts, validates the
-// model two ways on the snapshot's live tokens, writes the ranked board to
-// /output/board.json, writes the dashboard's data beside it as data.js,
-// copies this repository's dashboard/ and screenshots/ to /output, and writes
-// /output/dossier.json with the vendored make.fun library.
+// scores every launch candidate with the fitted curve in lib/model.ts,
+// validates the model two ways on the snapshot's live tokens, writes the
+// ranked board to /output/board.json, writes the dashboard's data beside it
+// as data.js, copies this repository's dashboard/ and screenshots/ to
+// /output, and writes /output/dossier.json with the vendored make.fun library.
 //
 // The dashboard is a static page with no framework and no network:
 // dashboard/index.html, dashboard/app.css and dashboard/app.js read the
@@ -91,7 +91,8 @@ writeFileSync(
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
-    `token radar: validation LOO n=${radar.validation.loo.n} median error ${radar.validation.loo.median_ape_pct}% (${radar.validation.loo.within_2x} within 2x), walk-forward n=${radar.validation.walk_forward.test_n} median error ${radar.validation.walk_forward.median_ape_pct}% (${radar.validation.walk_forward.within_2x} within 2x, cutoff ${radar.validation.walk_forward.cutoff})\n` +
+    `token radar: curve log10 mcap = ${radar.curve.intercept} + ${radar.curve.slope} x log10 TVL (Huber, n=${radar.curve.fit_n}); top implied $${board[0]!.implied_value_usd.toLocaleString('en-US')} (${board[0]!.name})\n` +
+    `token radar: validation LOO n=${radar.validation.loo.n} median miss ${radar.validation.loo.median_miss}x (${radar.validation.loo.within_3x} within 3x), walk-forward n=${radar.validation.walk_forward.test_n} median miss ${radar.validation.walk_forward.median_miss}x (${radar.validation.walk_forward.within_3x} within 3x, cutoff ${radar.validation.walk_forward.cutoff})\n` +
     `token radar: verdicts farm ${board.filter((r) => r.verdict === 'farm').length}, thin ${board.filter((r) => r.verdict === 'thin').length}, skip ${board.filter((r) => r.verdict === 'skip').length}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashboardFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
